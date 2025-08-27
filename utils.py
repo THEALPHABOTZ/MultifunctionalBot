@@ -41,9 +41,11 @@ async def progress_bar(current, total, msg, start_time, last_edit):
     percent = int(current * 100 / max(1, total))
     speed = current / diff
     eta = int((total - current) / max(1e-6, speed))
-    if percent % 10 == 0 and percent != last_edit[0]:
-        filled = "■" * (percent // 10)
-        empty = "□" * (10 - percent // 10)
+    
+    # Update every 7 seconds instead of every 10%
+    if now - last_edit[0] >= 7:
+        filled = "█" * (percent // 10)  # Sharp filled blocks
+        empty = "▒" * (10 - percent // 10)  # Sharp empty blocks
         text = (
             f"「 {filled}{empty} 」 {percent}%\n"
             f"Speed: {humanbytes(speed)}/s\n"
@@ -51,7 +53,7 @@ async def progress_bar(current, total, msg, start_time, last_edit):
         )
         try:
             await msg.edit_text(text)
-            last_edit[0] = percent
+            last_edit[0] = now  # Store last update time instead of percentage
         except:
             pass
 
@@ -112,3 +114,4 @@ def build_output_path(base_name: str, language: str, codec: str, track_no: int) 
     safe_lang = sanitize_filename(language).replace(" ", "_")
     ext = codec if codec else "audio"
     return os.path.join(DOWNLOAD_DIR, f"{safe_base}_{safe_lang}_track{track_no}.{ext}")
+        
