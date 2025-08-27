@@ -11,6 +11,7 @@ import time
 import json
 import asyncio
 import subprocess
+from bot import app
 from typing import Dict, Any
 from pyrogram import Client, filters
 from pyrogram.types import Message
