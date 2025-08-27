@@ -14,7 +14,17 @@ import subprocess
 from typing import Dict, Any
 from pyrogram import Client, filters
 from pyrogram.types import Message
-from config import OWNER_ID, DOWNLOAD_DIR
+
+# Try different import methods for config
+try:
+    from config import OWNER_ID, DOWNLOAD_DIR
+except ImportError:
+    try:
+        from ..config import OWNER_ID, DOWNLOAD_DIR
+    except ImportError:
+        # Fallback - you'll need to set these manually
+        OWNER_ID = 12345678  # Replace with your actual owner ID
+        DOWNLOAD_DIR = "./downloads"
 
 # Ensure download directory exists
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
@@ -256,10 +266,14 @@ async def compress_video(input_path: str, message: Message) -> str:
         await progress_msg.edit_text(f"❌ **Compression failed**: {str(e)}")
         raise
 
-# Command handlers
-@Client.on_message(filters.command("codec") & filters.user(OWNER_ID))
+# Command handlers - Using proper pyrogram decorators for plugins
+@Client.on_message(filters.command("codec"))
 async def set_codec(client: Client, message: Message):
     """Set video codec"""
+    # Check if user is owner
+    if message.from_user.id != OWNER_ID:
+        return
+        
     if len(message.command) < 2:
         await message.reply_text("❌ **Usage**: `/codec <codec_name>`\n**Examples**: `libx264`, `libx265`, `libvpx-vp9`")
         return
@@ -270,9 +284,12 @@ async def set_codec(client: Client, message: Message):
     else:
         await message.reply_text("❌ **Failed to update codec**")
 
-@Client.on_message(filters.command("crf") & filters.user(OWNER_ID))
+@Client.on_message(filters.command("crf"))
 async def set_crf(client: Client, message: Message):
     """Set CRF value"""
+    if message.from_user.id != OWNER_ID:
+        return
+        
     if len(message.command) < 2:
         await message.reply_text("❌ **Usage**: `/crf <value>`\n**Range**: 0-51 (lower = better quality)")
         return
@@ -287,9 +304,12 @@ async def set_crf(client: Client, message: Message):
     except ValueError:
         await message.reply_text("❌ **CRF must be a number**")
 
-@Client.on_message(filters.command("preset") & filters.user(OWNER_ID))
+@Client.on_message(filters.command("preset"))
 async def set_preset(client: Client, message: Message):
     """Set encoding preset"""
+    if message.from_user.id != OWNER_ID:
+        return
+        
     if len(message.command) < 2:
         await message.reply_text("❌ **Usage**: `/preset <preset>`\n**Options**: ultrafast, veryfast, fast, medium, slow, slower, veryslow")
         return
@@ -303,9 +323,12 @@ async def set_preset(client: Client, message: Message):
     else:
         await message.reply_text(f"❌ **Invalid preset**. Choose from: {', '.join(valid_presets)}")
 
-@Client.on_message(filters.command("audio") & filters.user(OWNER_ID))
+@Client.on_message(filters.command("audio"))
 async def set_audio_codec(client: Client, message: Message):
     """Set audio codec"""
+    if message.from_user.id != OWNER_ID:
+        return
+        
     if len(message.command) < 2:
         await message.reply_text("❌ **Usage**: `/audio <codec>`\n**Examples**: `aac`, `libopus`, `mp3`")
         return
@@ -314,9 +337,12 @@ async def set_audio_codec(client: Client, message: Message):
     video_settings.update_setting("audio", codec)
     await message.reply_text(f"✅ **Audio codec set to**: `{codec}`")
 
-@Client.on_message(filters.command("audiobit") & filters.user(OWNER_ID))
+@Client.on_message(filters.command("audiobit"))
 async def set_audio_bitrate(client: Client, message: Message):
     """Set audio bitrate"""
+    if message.from_user.id != OWNER_ID:
+        return
+        
     if len(message.command) < 2:
         await message.reply_text("❌ **Usage**: `/audiobit <bitrate>`\n**Examples**: `32k`, `48k`, `64k`, `128k`")
         return
@@ -325,12 +351,14 @@ async def set_audio_bitrate(client: Client, message: Message):
     video_settings.update_setting("audiobit", bitrate)
     await message.reply_text(f"✅ **Audio bitrate set to**: `{bitrate}`")
 
-@Client.on_message(filters.command("settings") & filters.user(OWNER_ID))
+@Client.on_message(filters.command("settings"))
 async def show_settings(client: Client, message: Message):
     """Show current settings"""
+    if message.from_user.id != OWNER_ID:
+        return
     await message.reply_text(video_settings.get_settings_text())
 
-@Client.on_message(filters.video)
+@Client.on_message(filters.video & filters.private)
 async def handle_video(client: Client, message: Message):
     """Handle incoming videos for compression"""
     try:
@@ -383,4 +411,12 @@ async def handle_video(client: Client, message: Message):
                 os.remove(output_path)
         except:
             pass
-      
+
+# Debug command to test if plugin is working
+@Client.on_message(filters.command("test480"))
+async def test_plugin(client: Client, message: Message):
+    """Test if 480p plugin is working"""
+    if message.from_user.id != OWNER_ID:
+        return
+    await message.reply_text("✅ **480p Plugin is working!**\n\nSend a video to compress it to 480p.")
+                
