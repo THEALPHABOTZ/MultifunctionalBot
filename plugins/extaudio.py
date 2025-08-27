@@ -10,6 +10,7 @@ import re
 import subprocess
 import json
 import asyncio
+from bot import app
 from typing import List, Dict
 from pyrogram import Client, filters
 from pyrogram.types import Message
