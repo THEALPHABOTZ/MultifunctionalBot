@@ -103,15 +103,14 @@ def time_formatter(seconds: int) -> str:
 async def progress_bar(current, total, msg, start_time, last_edit, operation="Processing"):
     now = time.time()
     diff = max(1e-6, now - start_time)
-    percent = int(current * 100 / max(1, total))
+    percent = min(100, int(current * 100 / max(1, total)))
     speed = current / diff if operation == "Downloading" else 0
     eta = int((total - current) / max(1e-6, speed)) if speed > 0 else 0
     
     if now - last_edit[0] >= 7:
-        filled = "●" * (percent // 10)
-        empty = "○" * (10 - percent // 10)
-        
         if operation == "Downloading":
+            filled = "●" * (percent // 10)
+            empty = "○" * (10 - percent // 10)
             text = (
                 f"📥 **Downloading...**\n\n"
                 f"「 {filled}{empty} 」 {percent}%\n"
@@ -120,12 +119,20 @@ async def progress_bar(current, total, msg, start_time, last_edit, operation="Pr
                 f"**Size**: {humanbytes(current)} / {humanbytes(total)}"
             )
         else:
+            filled = "█" * (percent // 10)
+            empty = "░" * (10 - percent // 10)
             elapsed = time_formatter(int(now - start_time))
+            
+            if total > current and speed > 0:
+                remaining_time = time_formatter(int((total - current) / max(1e-6, speed)))
+            else:
+                remaining_time = "calculating..."
+            
             text = (
-                f"🔄 **Compressing Video...**\n\n"
-                f"「 {filled}{empty} 」 {percent}%\n"
-                f"**Elapsed**: {elapsed}\n"
-                f"**Frame**: {int(current)} / {int(total)}"
+                f"⚡ ᴇɴᴄᴏᴅɪɴɢ ɪɴ ᴘʀᴏɢʀᴇss\n\n"
+                f"🕛 ᴛɪᴍᴇ ʟᴇғᴛ: {remaining_time}\n\n"
+                f"♻️ᴘʀᴏɢʀᴇss: {percent}%\n"
+                f"[{filled}{empty}]"
             )
         
         try:
@@ -168,8 +175,8 @@ async def compress_video(input_path: str, message: Message) -> str:
     
     probe_cmd = [
         "ffprobe", "-v", "error", "-select_streams", "v:0",
-        "-count_packets", "-show_entries", "stream=nb_read_packets",
-        "-csv=p=0", input_path
+        "-show_entries", "stream=nb_frames",
+        "-of", "csv=p=0", input_path
     ]
     
     try:
@@ -194,6 +201,7 @@ async def compress_video(input_path: str, message: Message) -> str:
     start_time = time.time()
     last_edit = [start_time - 7]
     current_frame = 0
+    total_frames_actual = total_frames
     
     try:
         process = subprocess.Popen(
@@ -210,7 +218,9 @@ async def compress_video(input_path: str, message: Message) -> str:
                 try:
                     frame_num = int(output.split('=')[1].strip())
                     current_frame = frame_num
-                    await progress_bar(current_frame, total_frames, progress_msg, start_time, last_edit, "Compressing")
+                    if current_frame > total_frames_actual:
+                        total_frames_actual = current_frame + 100
+                    await progress_bar(current_frame, total_frames_actual, progress_msg, start_time, last_edit, "Compressing")
                 except:
                     pass
         
@@ -364,4 +374,4 @@ async def compress_video_command(client, message: Message):
                 os.remove(output_path)
         except:
             pass
-    
+            
