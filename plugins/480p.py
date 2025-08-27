@@ -307,12 +307,22 @@ async def show_settings(client, message: Message):
 
 @app.on_message(filters.command("test480") & filters.user(OWNER_ID))
 async def test_plugin(client, message: Message):
-    await message.reply_text("✅ **480p Plugin is working!**\n\nSend a video to compress it to 480p.")
+    await message.reply_text("✅ **480p Plugin is working!**\n\nReply to a video with `/c480p` to compress it to 480p.")
 
-@app.on_message(filters.video & filters.private)
-async def handle_video(client, message: Message):
+@app.on_message(filters.command("c480p"))
+async def compress_video_command(client, message: Message):
+    if not message.reply_to_message:
+        await message.reply_text("❌ **Please reply to a video file with this command**")
+        return
+    
+    replied_message = message.reply_to_message
+    
+    if not replied_message.video:
+        await message.reply_text("❌ **The replied message must contain a video file**")
+        return
+    
     try:
-        file_size = message.video.file_size
+        file_size = replied_message.video.file_size
         if file_size > 2 * 1024 * 1024 * 1024:
             await message.reply_text("❌ **File too large! Maximum size: 2GB**")
             return
@@ -320,11 +330,11 @@ async def handle_video(client, message: Message):
         await message.reply_text(
             f"📺 **Video received!**\n\n"
             f"📁 **Size**: {humanbytes(file_size)}\n"
-            f"⏱️ **Duration**: {time_formatter(message.video.duration)}\n\n"
+            f"⏱️ **Duration**: {time_formatter(replied_message.video.duration)}\n\n"
             f"🔄 **Starting compression with current settings...**"
         )
         
-        input_path = await download_video(message)
+        input_path = await download_video(replied_message)
         output_path = await compress_video(input_path, message)
         
         upload_msg = await message.reply_text("📤 **Uploading compressed video...**")
@@ -333,7 +343,7 @@ async def handle_video(client, message: Message):
             chat_id=message.chat.id,
             video=output_path,
             caption=f"🎥 **Video compressed to 480p**\n\n{video_settings.get_settings_text().split('**Available Commands:**')[0]}",
-            reply_to_message_id=message.id
+            reply_to_message_id=message.reply_to_message.id
         )
         
         await upload_msg.delete()
@@ -354,3 +364,4 @@ async def handle_video(client, message: Message):
                 os.remove(output_path)
         except:
             pass
+    
