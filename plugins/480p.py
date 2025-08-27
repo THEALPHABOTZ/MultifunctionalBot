@@ -9,25 +9,12 @@ import os
 import re
 import time
 import json
-import asyncio
 import subprocess
-from bot import app
-from typing import Dict, Any
-from pyrogram import Client, filters
+from pyrogram import filters
 from pyrogram.types import Message
+from bot import app
+from config import OWNER_ID, DOWNLOAD_DIR
 
-# Try different import methods for config
-try:
-    from config import OWNER_ID, DOWNLOAD_DIR
-except ImportError:
-    try:
-        from ..config import OWNER_ID, DOWNLOAD_DIR
-    except ImportError:
-        # Fallback - you'll need to set these manually
-        OWNER_ID = 12345678  # Replace with your actual owner ID
-        DOWNLOAD_DIR = "./downloads"
-
-# Ensure download directory exists
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 class VideoSettings:
@@ -44,7 +31,6 @@ class VideoSettings:
         self.load_settings()
     
     def load_settings(self):
-        """Load settings from file"""
         try:
             if os.path.exists(self.settings_file):
                 with open(self.settings_file, 'r') as f:
@@ -54,7 +40,6 @@ class VideoSettings:
             pass
     
     def save_settings(self):
-        """Save current settings to file"""
         try:
             with open(self.settings_file, 'w') as f:
                 json.dump(self.settings, f, indent=2)
@@ -62,7 +47,6 @@ class VideoSettings:
             pass
     
     def update_setting(self, key: str, value: str) -> bool:
-        """Update a specific setting"""
         setting_map = {
             "codec": "codec",
             "crf": "crf", 
@@ -78,7 +62,6 @@ class VideoSettings:
         return False
     
     def get_settings_text(self) -> str:
-        """Get formatted settings text"""
         return f"""**Current Video Compression Settings:**
 
 🎥 **Codec**: `{self.settings['codec']}`
@@ -95,11 +78,9 @@ class VideoSettings:
 • `/audio <value>` - Set audio codec (aac, libopus, mp3)
 • `/audiobit <value>` - Set audio bitrate (32k, 48k, 64k, 128k, etc.)"""
 
-# Initialize settings
 video_settings = VideoSettings()
 
 def humanbytes(size: float) -> str:
-    """Convert bytes to human readable format"""
     if not size:
         return "0 B"
     power = 2 ** 10
@@ -111,7 +92,6 @@ def humanbytes(size: float) -> str:
     return f"{size:.2f} {units[n]}"
 
 def time_formatter(seconds: int) -> str:
-    """Format seconds to human readable time"""
     m, s = divmod(int(seconds), 60)
     h, m = divmod(m, 60)
     out = []
@@ -121,17 +101,15 @@ def time_formatter(seconds: int) -> str:
     return " ".join(out)
 
 async def progress_bar(current, total, msg, start_time, last_edit, operation="Processing"):
-    """Circular progress bar that updates every 7 seconds"""
     now = time.time()
     diff = max(1e-6, now - start_time)
     percent = int(current * 100 / max(1, total))
     speed = current / diff if operation == "Downloading" else 0
     eta = int((total - current) / max(1e-6, speed)) if speed > 0 else 0
     
-    # Update every 7 seconds
     if now - last_edit[0] >= 7:
-        filled = "●" * (percent // 10)    # Filled circles
-        empty = "○" * (10 - percent // 10)  # Empty circles
+        filled = "●" * (percent // 10)
+        empty = "○" * (10 - percent // 10)
         
         if operation == "Downloading":
             text = (
@@ -157,23 +135,21 @@ async def progress_bar(current, total, msg, start_time, last_edit, operation="Pr
             pass
 
 def sanitize_filename(name: str) -> str:
-    """Sanitize filename for safe storage"""
     name = name.strip()
     name = re.sub(r"[\\/:*?\"<>|]", "_", name)
     name = re.sub(r"\s+", " ", name)
     return name
 
-async def download_video(client: Client, message: Message) -> str:
-    """Download video from Telegram with progress"""
+async def download_video(message: Message) -> str:
     file_name = sanitize_filename(getattr(message.video, 'file_name', f"video_{int(time.time())}.mp4"))
     file_path = os.path.join(DOWNLOAD_DIR, file_name)
     
     progress_msg = await message.reply_text("📥 **Starting download...**")
     start_time = time.time()
-    last_edit = [start_time - 7]  # Ensure immediate first update
+    last_edit = [start_time - 7]
     
     try:
-        await client.download_media(
+        await app.download_media(
             message,
             file_name=file_path,
             progress=progress_bar,
@@ -186,12 +162,10 @@ async def download_video(client: Client, message: Message) -> str:
         raise
 
 async def compress_video(input_path: str, message: Message) -> str:
-    """Compress video using ffmpeg with progress tracking"""
     settings = video_settings.settings
     base_name = os.path.splitext(os.path.basename(input_path))[0]
     output_path = os.path.join(DOWNLOAD_DIR, f"{base_name}_480p.mp4")
     
-    # Get total frame count for progress tracking
     probe_cmd = [
         "ffprobe", "-v", "error", "-select_streams", "v:0",
         "-count_packets", "-show_entries", "stream=nb_read_packets",
@@ -204,7 +178,6 @@ async def compress_video(input_path: str, message: Message) -> str:
     except:
         total_frames = 1000
     
-    # FFmpeg compression command
     cmd = [
         "ffmpeg", "-i", input_path,
         "-c:v", settings["codec"],
@@ -228,7 +201,6 @@ async def compress_video(input_path: str, message: Message) -> str:
             universal_newlines=True, bufsize=1
         )
         
-        # Monitor progress
         while True:
             output = process.stdout.readline()
             if output == '' and process.poll() is not None:
@@ -245,7 +217,6 @@ async def compress_video(input_path: str, message: Message) -> str:
         process.wait()
         
         if process.returncode == 0:
-            # Get file sizes
             input_size = os.path.getsize(input_path)
             output_size = os.path.getsize(output_path)
             compression_ratio = ((input_size - output_size) / input_size) * 100
@@ -267,14 +238,8 @@ async def compress_video(input_path: str, message: Message) -> str:
         await progress_msg.edit_text(f"❌ **Compression failed**: {str(e)}")
         raise
 
-# Command handlers - Using proper pyrogram decorators for plugins
-@Client.on_message(filters.command("codec"))
-async def set_codec(client: Client, message: Message):
-    """Set video codec"""
-    # Check if user is owner
-    if message.from_user.id != OWNER_ID:
-        return
-        
+@app.on_message(filters.command("codec") & filters.user(OWNER_ID))
+async def set_codec(client, message: Message):
     if len(message.command) < 2:
         await message.reply_text("❌ **Usage**: `/codec <codec_name>`\n**Examples**: `libx264`, `libx265`, `libvpx-vp9`")
         return
@@ -285,12 +250,8 @@ async def set_codec(client: Client, message: Message):
     else:
         await message.reply_text("❌ **Failed to update codec**")
 
-@Client.on_message(filters.command("crf"))
-async def set_crf(client: Client, message: Message):
-    """Set CRF value"""
-    if message.from_user.id != OWNER_ID:
-        return
-        
+@app.on_message(filters.command("crf") & filters.user(OWNER_ID))
+async def set_crf(client, message: Message):
     if len(message.command) < 2:
         await message.reply_text("❌ **Usage**: `/crf <value>`\n**Range**: 0-51 (lower = better quality)")
         return
@@ -305,12 +266,8 @@ async def set_crf(client: Client, message: Message):
     except ValueError:
         await message.reply_text("❌ **CRF must be a number**")
 
-@Client.on_message(filters.command("preset"))
-async def set_preset(client: Client, message: Message):
-    """Set encoding preset"""
-    if message.from_user.id != OWNER_ID:
-        return
-        
+@app.on_message(filters.command("preset") & filters.user(OWNER_ID))
+async def set_preset(client, message: Message):
     if len(message.command) < 2:
         await message.reply_text("❌ **Usage**: `/preset <preset>`\n**Options**: ultrafast, veryfast, fast, medium, slow, slower, veryslow")
         return
@@ -324,12 +281,8 @@ async def set_preset(client: Client, message: Message):
     else:
         await message.reply_text(f"❌ **Invalid preset**. Choose from: {', '.join(valid_presets)}")
 
-@Client.on_message(filters.command("audio"))
-async def set_audio_codec(client: Client, message: Message):
-    """Set audio codec"""
-    if message.from_user.id != OWNER_ID:
-        return
-        
+@app.on_message(filters.command("audio") & filters.user(OWNER_ID))
+async def set_audio_codec(client, message: Message):
     if len(message.command) < 2:
         await message.reply_text("❌ **Usage**: `/audio <codec>`\n**Examples**: `aac`, `libopus`, `mp3`")
         return
@@ -338,12 +291,8 @@ async def set_audio_codec(client: Client, message: Message):
     video_settings.update_setting("audio", codec)
     await message.reply_text(f"✅ **Audio codec set to**: `{codec}`")
 
-@Client.on_message(filters.command("audiobit"))
-async def set_audio_bitrate(client: Client, message: Message):
-    """Set audio bitrate"""
-    if message.from_user.id != OWNER_ID:
-        return
-        
+@app.on_message(filters.command("audiobit") & filters.user(OWNER_ID))
+async def set_audio_bitrate(client, message: Message):
     if len(message.command) < 2:
         await message.reply_text("❌ **Usage**: `/audiobit <bitrate>`\n**Examples**: `32k`, `48k`, `64k`, `128k`")
         return
@@ -352,20 +301,19 @@ async def set_audio_bitrate(client: Client, message: Message):
     video_settings.update_setting("audiobit", bitrate)
     await message.reply_text(f"✅ **Audio bitrate set to**: `{bitrate}`")
 
-@Client.on_message(filters.command("settings"))
-async def show_settings(client: Client, message: Message):
-    """Show current settings"""
-    if message.from_user.id != OWNER_ID:
-        return
+@app.on_message(filters.command("settings") & filters.user(OWNER_ID))
+async def show_settings(client, message: Message):
     await message.reply_text(video_settings.get_settings_text())
 
-@Client.on_message(filters.video & filters.private)
-async def handle_video(client: Client, message: Message):
-    """Handle incoming videos for compression"""
+@app.on_message(filters.command("test480") & filters.user(OWNER_ID))
+async def test_plugin(client, message: Message):
+    await message.reply_text("✅ **480p Plugin is working!**\n\nSend a video to compress it to 480p.")
+
+@app.on_message(filters.video & filters.private)
+async def handle_video(client, message: Message):
     try:
-        # Check file size (optional limit)
         file_size = message.video.file_size
-        if file_size > 2 * 1024 * 1024 * 1024:  # 2GB limit
+        if file_size > 2 * 1024 * 1024 * 1024:
             await message.reply_text("❌ **File too large! Maximum size: 2GB**")
             return
         
@@ -376,16 +324,12 @@ async def handle_video(client: Client, message: Message):
             f"🔄 **Starting compression with current settings...**"
         )
         
-        # Download video
-        input_path = await download_video(client, message)
-        
-        # Compress video
+        input_path = await download_video(message)
         output_path = await compress_video(input_path, message)
         
-        # Send compressed video back
         upload_msg = await message.reply_text("📤 **Uploading compressed video...**")
         
-        await client.send_video(
+        await app.send_video(
             chat_id=message.chat.id,
             video=output_path,
             caption=f"🎥 **Video compressed to 480p**\n\n{video_settings.get_settings_text().split('**Available Commands:**')[0]}",
@@ -394,7 +338,6 @@ async def handle_video(client: Client, message: Message):
         
         await upload_msg.delete()
         
-        # Clean up files
         try:
             os.remove(input_path)
             os.remove(output_path)
@@ -404,7 +347,6 @@ async def handle_video(client: Client, message: Message):
     except Exception as e:
         await message.reply_text(f"❌ **Error**: {str(e)}")
         
-        # Clean up on error
         try:
             if 'input_path' in locals():
                 os.remove(input_path)
@@ -412,12 +354,3 @@ async def handle_video(client: Client, message: Message):
                 os.remove(output_path)
         except:
             pass
-
-# Debug command to test if plugin is working
-@Client.on_message(filters.command("test480"))
-async def test_plugin(client: Client, message: Message):
-    """Test if 480p plugin is working"""
-    if message.from_user.id != OWNER_ID:
-        return
-    await message.reply_text("✅ **480p Plugin is working!**\n\nSend a video to compress it to 480p.")
-                
