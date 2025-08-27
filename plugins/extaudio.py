@@ -6,94 +6,69 @@
 # ---------------------------------------------------------
 
 import os
-import time
+import re
 import subprocess
-from pyrogram import filters
-from bot import app
+import json
+from typing import List, Dict
 from config import DOWNLOAD_DIR
-from utils import (
-    progress_bar, get_audio_tracks, build_output_path,
-    sanitize_filename
-)
+from progressbar import progress_bar, humanbytes, time_formatter  
 
-@app.on_message(filters.command("extaudio") & filters.reply)
-async def extaudio_cmd(client, message):
-    replied = message.reply_to_message
-    if not (replied and (replied.video or replied.document or replied.audio)):
-        await message.reply_text("Reply to a video/document message with /extaudio.")
-        return
+os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-    msg = await message.reply_text("Downloading file…")
-    last_edit = [0]
-    start_time = time.time()
+def sanitize_filename(name: str) -> str:
+    name = name.strip()
+    name = re.sub(r"[\/:*?\"<>|]", "_", name)
+    name = re.sub(r"\s+", " ", name)
+    return name
 
-    orig_name = (replied.video and replied.video.file_name) or \
-                (replied.document and replied.document.file_name) or \
-                (replied.audio and replied.audio.file_name) or \
-                "input"
-    base_name = os.path.splitext(os.path.basename(orig_name))[0]
+def ffprobe_streams(file_path: str) -> Dict:
+    cmd = [
+        "ffprobe", "-v", "error",
+        "-select_streams", "a",
+        "-show_entries", "stream=index,codec_name:stream_tags=language,title",
+        "-of", "json", file_path
+    ]
+    res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if res.returncode != 0:
+        raise RuntimeError(res.stderr.strip() or "ffprobe failed")
+    return json.loads(res.stdout or "{}")
 
-    file_path = await replied.download(
-        file_name=os.path.join(DOWNLOAD_DIR, sanitize_filename(orig_name)),
-        progress=progress_bar,
-        progress_args=(msg, start_time, last_edit)
-    )
+def get_audio_tracks(file_path: str) -> List[Dict]:
+    data = ffprobe_streams(file_path)
+    tracks = []
+    for i, stream in enumerate(data.get("streams", [])):
+        codec = stream.get("codec_name") or "audio"
+        tags = stream.get("tags", {}) or {}
+        tracks.append({
+            "map_index": i,
+            "codec": codec,
+            "language": normalize_language(tags.get("language")),
+            "title": tags.get("title") or ""
+        })
+    return tracks
 
-    await msg.edit_text("Scanning audio streams…")
-    try:
-        tracks = get_audio_tracks(file_path)
-    except Exception as e:
-        await msg.edit_text(f"ffprobe failed: {e}")
-        try: os.remove(file_path)
-        except: pass
-        return
+def normalize_language(lang: str) -> str:
+    if not lang:
+        return "Unknown"
+    table = {
+        "eng": "English", "en": "English",
+        "hin": "Hindi", "hi": "Hindi",
+        "jpn": "Japanese", "ja": "Japanese",
+        "tam": "Tamil", "ta": "Tamil",
+        "tel": "Telugu", "te": "Telugu",
+        "kan": "Kannada", "kn": "Kannada",
+        "mar": "Marathi", "mr": "Marathi",
+        "ben": "Bengali", "bn": "Bengali",
+        "urd": "Urdu", "ur": "Urdu",
+        "fra": "French", "fr": "French",
+        "spa": "Spanish", "es": "Spanish",
+        "unk": "Unknown"
+    }
+    l = lang.strip().lower()
+    return table.get(l, lang.capitalize())
 
-    if not tracks:
-        await msg.edit_text("No audio tracks found.")
-        try: os.remove(file_path)
-        except: pass
-        return
-
-    extracted = 0
-    errors = []
-
-    for i, t in enumerate(tracks, start=1):
-        out_path = build_output_path(base_name, t["language"], t["codec"], i)
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", file_path,
-            "-map", f"0:a:{t['map_index']}",
-            "-c", "copy",
-            out_path
-        ]
-        try:
-            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            if res.returncode != 0 or not os.path.exists(out_path):
-                raise RuntimeError(res.stderr.strip() or "ffmpeg failed")
-
-            up_msg = await message.reply_text(f"Uploading track {i}…")
-            last_edit_up = [0]
-            start_up = time.time()
-
-            caption = f"Extracted Track {i} | Language: {t['language']}"
-            await message.reply_document(
-                out_path,
-                caption=caption,
-                progress=progress_bar,
-                progress_args=(up_msg, start_up, last_edit_up)
-            )
-            await up_msg.delete()
-            extracted += 1
-            try: os.remove(out_path)
-            except: pass
-        except Exception as e:
-            errors.append(f"Track {i} ({t['language']}): {e}")
-
-    try: os.remove(file_path)
-    except: pass
-
-    if errors:
-        err_text = "\n".join(errors[:6])
-        await msg.edit_text(f"Done: {extracted}/{len(tracks)} extracted.\nErrors:\n{err_text}")
-    else:
-        await msg.edit_text(f"All {extracted} audio tracks extracted.")
+def build_output_path(base_name: str, language: str, codec: str, track_no: int) -> str:
+    safe_base = sanitize_filename(base_name)
+    safe_lang = sanitize_filename(language).replace(" ", "")
+    ext = codec if codec else "audio"
+    return os.path.join(DOWNLOAD_DIR, f"{safe_base}{safe_lang}_track{track_no}.{ext}")
