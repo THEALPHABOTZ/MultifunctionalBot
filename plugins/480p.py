@@ -10,6 +10,8 @@ import re
 import time
 import json
 import subprocess
+import math
+import asyncio
 from pyrogram import filters
 from pyrogram.types import Message
 from bot import app
@@ -91,49 +93,52 @@ def humanbytes(size: float) -> str:
         n += 1
     return f"{size:.2f} {units[n]}"
 
-def time_formatter(seconds: int) -> str:
-    m, s = divmod(int(seconds), 60)
-    h, m = divmod(m, 60)
-    out = []
-    if h: out.append(f"{h}h")
-    if m: out.append(f"{m}m")
-    if s or not out: out.append(f"{s}s")
-    return " ".join(out)
+def time_formatter(milliseconds: int) -> str:
+    seconds, milliseconds = divmod(int(milliseconds), 1000)
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    days, hours = divmod(hours, 24)
+    tmp = ((str(days) + "d, ") if days else "") + \
+        ((str(hours) + "h, ") if hours else "") + \
+        ((str(minutes) + "m, ") if minutes else "") + \
+        ((str(seconds) + "s, ") if seconds else "")
+    return tmp[:-2] if tmp else "0s"
+
+async def get_video_duration(video_path: str) -> int:
+    process = subprocess.Popen(
+        ['ffmpeg', "-hide_banner", '-i', video_path],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT
+    )
+    stdout, stderr = process.communicate()
+    output = stdout.decode().strip()
+    duration = re.search(r"Duration:\s*(\d*):(\d*):(\d+\.?\d*)[\s\w*$]", output)
+    
+    if duration is not None:
+        hours = int(duration.group(1))
+        minutes = int(duration.group(2))
+        seconds = math.floor(float(duration.group(3)))
+        total_seconds = (hours * 60 * 60) + (minutes * 60) + seconds
+        return total_seconds
+    return 0
 
 async def progress_bar(current, total, msg, start_time, last_edit, operation="Processing"):
     now = time.time()
     diff = max(1e-6, now - start_time)
-    percent = min(100, int(current * 100 / max(1, total)))
+    percent = int(current * 100 / max(1, total))
     speed = current / diff if operation == "Downloading" else 0
     eta = int((total - current) / max(1e-6, speed)) if speed > 0 else 0
     
     if now - last_edit[0] >= 7:
-        if operation == "Downloading":
-            filled = "●" * (percent // 10)
-            empty = "○" * (10 - percent // 10)
-            text = (
-                f"📥 **Downloading...**\n\n"
-                f"「 {filled}{empty} 」 {percent}%\n"
-                f"**Speed**: {humanbytes(speed)}/s\n"
-                f"**ETA**: {time_formatter(eta)}\n"
-                f"**Size**: {humanbytes(current)} / {humanbytes(total)}"
-            )
-        else:
-            filled = "█" * (percent // 10)
-            empty = "░" * (10 - percent // 10)
-            elapsed = time_formatter(int(now - start_time))
-            
-            if total > current and speed > 0:
-                remaining_time = time_formatter(int((total - current) / max(1e-6, speed)))
-            else:
-                remaining_time = "calculating..."
-            
-            text = (
-                f"⚡ ᴇɴᴄᴏᴅɪɴɢ ɪɴ ᴘʀᴏɢʀᴇss\n\n"
-                f"🕛 ᴛɪᴍᴇ ʟᴇғᴛ: {remaining_time}\n\n"
-                f"♻️ᴘʀᴏɢʀᴇss: {percent}%\n"
-                f"[{filled}{empty}]"
-            )
+        filled = "●" * (percent // 10)
+        empty = "○" * (10 - percent // 10)
+        text = (
+            f"📥 **Downloading...**\n\n"
+            f"「 {filled}{empty} 」 {percent}%\n"
+            f"**Speed**: {humanbytes(speed)}/s\n"
+            f"**ETA**: {time_formatter(eta * 1000)}\n"
+            f"**Size**: {humanbytes(current)} / {humanbytes(total)}"
+        )
         
         try:
             await msg.edit_text(text)
@@ -172,59 +177,102 @@ async def compress_video(input_path: str, message: Message) -> str:
     settings = video_settings.settings
     base_name = os.path.splitext(os.path.basename(input_path))[0]
     output_path = os.path.join(DOWNLOAD_DIR, f"{base_name}_480p.mp4")
+    progress_file = os.path.join(DOWNLOAD_DIR, f"progress_{int(time.time())}.txt")
     
-    probe_cmd = [
-        "ffprobe", "-v", "error", "-select_streams", "v:0",
-        "-show_entries", "stream=nb_frames",
-        "-of", "csv=p=0", input_path
-    ]
+    with open(progress_file, 'w') as f:
+        pass
     
-    try:
-        result = subprocess.run(probe_cmd, capture_output=True, text=True)
-        total_frames = int(result.stdout.strip()) if result.stdout.strip().isdigit() else 1000
-    except:
-        total_frames = 1000
+    total_duration = await get_video_duration(input_path)
+    if total_duration == 0:
+        total_duration = 3600
     
     cmd = [
-        "ffmpeg", "-i", input_path,
+        "ffmpeg", "-hide_banner", "-loglevel", "quiet",
+        "-progress", progress_file,
+        "-i", input_path,
         "-c:v", settings["codec"],
         "-crf", settings["crf"],
         "-s", settings["resolution"],
         "-preset", settings["preset"],
         "-c:a", settings["audio_codec"],
         "-b:a", settings["audio_bitrate"],
-        "-progress", "pipe:1",
         "-y", output_path
     ]
     
     progress_msg = await message.reply_text("🔄 **Starting compression...**")
-    start_time = time.time()
-    last_edit = [start_time - 7]
-    current_frame = 0
-    total_frames_actual = total_frames
+    compression_start_time = time.time()
+    last_update_time = compression_start_time - 7
     
     try:
-        process = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            universal_newlines=True, bufsize=1
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
         )
         
-        while True:
-            output = process.stdout.readline()
-            if output == '' and process.poll() is not None:
-                break
-                
-            if output.startswith('frame='):
+        is_done = False
+        while process.returncode is None:
+            await asyncio.sleep(3)
+            
+            if time.time() - last_update_time >= 7:
                 try:
-                    frame_num = int(output.split('=')[1].strip())
-                    current_frame = frame_num
-                    if current_frame > total_frames_actual:
-                        total_frames_actual = current_frame + 100
-                    await progress_bar(current_frame, total_frames_actual, progress_msg, start_time, last_edit, "Compressing")
-                except:
+                    with open(progress_file, 'r') as file:
+                        text = file.read()
+                        
+                        frame = re.findall(r"frame=(\d+)", text)
+                        time_in_us = re.findall(r"out_time_ms=(\d+)", text)
+                        progress_status = re.findall(r"progress=(\w+)", text)
+                        speed = re.findall(r"speed=(\d+\.?\d*)", text)
+                        
+                        if len(frame):
+                            frame = int(frame[-1])
+                        else:
+                            frame = 1
+                            
+                        if len(speed):
+                            speed_val = float(speed[-1])
+                        else:
+                            speed_val = 1
+                            
+                        if len(time_in_us):
+                            elapsed_time = int(time_in_us[-1]) / 1000000
+                        else:
+                            elapsed_time = 1
+                            
+                        if len(progress_status):
+                            if progress_status[-1] == "end":
+                                is_done = True
+                                break
+                        
+                        percentage = math.floor(elapsed_time * 100 / total_duration)
+                        percentage = min(100, max(0, percentage))
+                        
+                        difference = math.floor((total_duration - elapsed_time) / float(speed_val))
+                        eta = time_formatter(difference * 1000) if difference > 0 else "calculating..."
+                        
+                        filled = "█" * (percentage // 10)
+                        empty = "░" * (10 - (percentage // 10))
+                        
+                        progress_str = f"♻️ᴘʀᴏɢʀᴇss: {percentage}%\n[{filled}{empty}]"
+                        
+                        stats = (
+                            f"⚡ ᴇɴᴄᴏᴅɪɴɢ ɪɴ ᴘʀᴏɢʀᴇss\n\n"
+                            f"🕛 ᴛɪᴍᴇ ʟᴇғᴛ: {eta}\n\n"
+                            f"{progress_str}"
+                        )
+                        
+                        await progress_msg.edit_text(stats)
+                        last_update_time = time.time()
+                        
+                except Exception:
                     pass
         
-        process.wait()
+        stdout, stderr = await process.communicate()
+        
+        try:
+            os.remove(progress_file)
+        except:
+            pass
         
         if process.returncode == 0:
             input_size = os.path.getsize(input_path)
@@ -236,15 +284,19 @@ async def compress_video(input_path: str, message: Message) -> str:
                 f"📁 **Original**: {humanbytes(input_size)}\n"
                 f"📁 **Compressed**: {humanbytes(output_size)}\n"
                 f"💾 **Saved**: {compression_ratio:.1f}%\n"
-                f"⏱️ **Time**: {time_formatter(int(time.time() - start_time))}"
+                f"⏱️ **Time**: {time_formatter(int((time.time() - compression_start_time) * 1000))}"
             )
             return output_path
         else:
-            error = process.stderr.read()
+            error = stderr.decode() if stderr else "Unknown error"
             await progress_msg.edit_text(f"❌ **Compression failed**: {error}")
             raise RuntimeError(f"FFmpeg failed: {error}")
             
     except Exception as e:
+        try:
+            os.remove(progress_file)
+        except:
+            pass
         await progress_msg.edit_text(f"❌ **Compression failed**: {str(e)}")
         raise
 
@@ -340,7 +392,7 @@ async def compress_video_command(client, message: Message):
         await message.reply_text(
             f"📺 **Video received!**\n\n"
             f"📁 **Size**: {humanbytes(file_size)}\n"
-            f"⏱️ **Duration**: {time_formatter(replied_message.video.duration)}\n\n"
+            f"⏱️ **Duration**: {replied_message.video.duration}s\n\n"
             f"🔄 **Starting compression with current settings...**"
         )
         
@@ -374,4 +426,4 @@ async def compress_video_command(client, message: Message):
                 os.remove(output_path)
         except:
             pass
-            
+        
