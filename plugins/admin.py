@@ -1,101 +1,90 @@
-import logging
-from pyrogram import Client, filters
+from pyrogram import filters
 from pyrogram.types import Message
 from config import OWNER_ID
 from database import Database
 from bot import app
 
 db = Database()
-logger = logging.getLogger(__name__)
 
-
-# ─────────────────────────────
-# Database utility functions
-# ─────────────────────────────
-
-async def add_admin_to_db(user_id: int) -> bool:
-    try:
-        existing = await db.admin_collection.find_one({"user_id": user_id})
-        if existing:
-            return False
-        await db.admin_collection.insert_one({"user_id": user_id})
-        return True
-    except Exception as e:
-        logger.error(f"Error adding admin: {e}")
-        return False
-
-
-async def remove_admin_from_db(user_id: int) -> bool:
-    try:
-        result = await db.admin_collection.delete_one({"user_id": user_id})
-        return result.deleted_count > 0
-    except Exception as e:
-        logger.error(f"Error removing admin: {e}")
-        return False
-
-
-async def get_all_admin_ids() -> list:
-    try:
-        cursor = db.admin_collection.find({})
-        admins = await cursor.to_list(length=None)
-        admin_ids = [admin["user_id"] for admin in admins]
-        admin_ids.append(OWNER_ID)  # always include owner
-        return list(set(admin_ids))
-    except Exception as e:
-        logger.error(f"Error fetching admins: {e}")
-        return [OWNER_ID]
-
-
-# ─────────────────────────────
-# Command handlers
-# ─────────────────────────────
-
-@Client.on_message(filters.command("addadmin") & filters.private)
-async def add_admin_cmd(client: Client, message: Message):
+@app.on_message(filters.command(["addadmin"]) & filters.private)
+async def add_admin_cmd(client, message: Message):
     if message.from_user.id != OWNER_ID:
-        return await message.reply_text("🚫 Only the owner can add admins.")
-
-    if len(message.command) != 2:
-        return await message.reply_text("Usage: `/addadmin user_id`")
-
+        return await message.reply_text("🚫 **Only owner can add admins!**")
+    
     try:
-        target_id = int(message.command[1])
-        success = await add_admin_to_db(target_id)
+        if message.reply_to_message:
+            target_id = message.reply_to_message.from_user.id
+        elif len(message.command) == 2:
+            target_id = int(message.command[1])
+        else:
+            return await message.reply_text(
+                "**Usage:** Reply to a user or use `/addadmin user_id`"
+            )
+
+        if target_id == OWNER_ID:
+            return await message.reply_text("⚠️ **Owner cannot be added as admin!**")
+
+        success = await db.add_admin(target_id)
+        
         if success:
-            await message.reply_text(f"✅ User `{target_id}` added as admin.")
+            await message.reply_text(f"✅ **Successfully added** `{target_id}` **as admin!**")
         else:
-            await message.reply_text(f"⚠️ User `{target_id}` is already an admin.")
+            await message.reply_text(f"⚠️ **User** `{target_id}` **is already an admin!**")
+            
+    except ValueError:
+        await message.reply_text("❌ **Please provide a valid user ID!**")
     except Exception as e:
-        await message.reply_text(f"❌ Error: `{str(e)}`")
+        await message.reply_text(f"❌ **Error:** `{str(e)}`")
 
-
-@Client.on_message(filters.command("rmadmin") & filters.private)
-async def remove_admin_cmd(client: Client, message: Message):
+@app.on_message(filters.command(["rmadmin"]) & filters.private)
+async def remove_admin_cmd(client, message: Message):
     if message.from_user.id != OWNER_ID:
-        return await message.reply_text("🚫 Only the owner can remove admins.")
-
-    if len(message.command) != 2:
-        return await message.reply_text("Usage: `/rmadmin user_id`")
-
+        return await message.reply_text("🚫 **Only owner can remove admins!**")
+    
     try:
-        target_id = int(message.command[1])
-        removed = await remove_admin_from_db(target_id)
+        if message.reply_to_message:
+            target_id = message.reply_to_message.from_user.id
+        elif len(message.command) == 2:
+            target_id = int(message.command[1])
+        else:
+            return await message.reply_text(
+                "**Usage:** Reply to a user or use `/rmadmin user_id`"
+            )
+
+        if target_id == OWNER_ID:
+            return await message.reply_text("⚠️ **Owner cannot be removed!**")
+
+        removed = await db.remove_admin(target_id)
+        
         if removed:
-            await message.reply_text(f"✅ User `{target_id}` removed from admin list.")
+            await message.reply_text(f"✅ **Successfully removed** `{target_id}` **from admin list!**")
         else:
-            await message.reply_text(f"⚠️ User `{target_id}` was not in admin list.")
+            await message.reply_text(f"⚠️ **User** `{target_id}` **is not an admin!**")
+            
+    except ValueError:
+        await message.reply_text("❌ **Please provide a valid user ID!**")
     except Exception as e:
-        await message.reply_text(f"❌ Error: `{str(e)}`")
+        await message.reply_text(f"❌ **Error:** `{str(e)}`")
 
-
-@Client.on_message(filters.command("adminlist") & filters.private)
-async def list_admins_cmd(client: Client, message: Message):
+@app.on_message(filters.command(["adminlist"]) & filters.private)
+async def admin_list_cmd(client, message: Message):
     if message.from_user.id != OWNER_ID:
-        return await message.reply_text("🚫 Only the owner can view admins.")
-
+        return await message.reply_text("🚫 **Only owner can view admin list!**")
+    
     try:
-        admin_ids = await get_all_admin_ids()
-        text = "**🔐 Admins:**\n" + "\n".join([f"- `{uid}`" for uid in admin_ids])
+        admins = await db.get_admins()
+        
+        if not admins:
+            return await message.reply_text("⚠️ **No admins found!**")
+        
+        text = "**👥 Admin List:**\n\n"
+        for idx, admin_id in enumerate(admins, 1):
+            if admin_id == OWNER_ID:
+                text += f"{idx}. `{admin_id}` **(Owner)**\n"
+            else:
+                text += f"{idx}. `{admin_id}`\n"
+                
         await message.reply_text(text)
+        
     except Exception as e:
-        await message.reply_text(f"❌ Error: `{str(e)}`")
+        await message.reply_text(f"❌ **Error:** `{str(e)}`")
