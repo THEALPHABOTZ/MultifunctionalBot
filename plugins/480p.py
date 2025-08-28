@@ -296,69 +296,6 @@ async def compress_video(input_path: str, message: Message) -> str:
         await progress_msg.edit_text(f"❌ **Compression failed**: {str(e)}")
         raise
 
-@app.on_message(filters.command("addadmin") & filters.user(OWNER_ID))
-async def add_admin(client, message: Message):
-    user_id = None
-    
-    if message.reply_to_message:
-        user_id = message.reply_to_message.from_user.id
-    elif len(message.command) > 1:
-        try:
-            user_id = int(message.command[1])
-        except ValueError:
-            await message.reply_text("❌ **Invalid user ID**")
-            return
-    
-    if not user_id:
-        await message.reply_text("❌ **Reply to a user or provide user ID**")
-        return
-    
-    if user_id == OWNER_ID:
-        await message.reply_text("❌ **Owner cannot be added as admin**")
-        return
-    
-    success = await Database.add_admin(user_id)
-    if success:
-        await message.reply_text(f"✅ **User {user_id} added as admin**")
-    else:
-        await message.reply_text("❌ **Failed to add admin**")
-
-@app.on_message(filters.command("rmadmin") & filters.user(OWNER_ID))
-async def remove_admin(client, message: Message):
-    user_id = None
-    
-    if message.reply_to_message:
-        user_id = message.reply_to_message.from_user.id
-    elif len(message.command) > 1:
-        try:
-            user_id = int(message.command[1])
-        except ValueError:
-            await message.reply_text("❌ **Invalid user ID**")
-            return
-    
-    if not user_id:
-        await message.reply_text("❌ **Reply to a user or provide user ID**")
-        return
-    
-    success = await Database.remove_admin(user_id)
-    if success:
-        await message.reply_text(f"✅ **User {user_id} removed from admin**")
-    else:
-        await message.reply_text("❌ **User not found in admin list**")
-
-@app.on_message(filters.command("adminlist") & filters.user(OWNER_ID))
-async def admin_list(client, message: Message):
-    admins = await Database.get_admins()
-    if not admins:
-        await message.reply_text("📝 **No admins found**")
-        return
-    
-    admin_text = "👥 **Admin List:**\n\n"
-    for admin_id in admins:
-        admin_text += f"• `{admin_id}`\n"
-    
-    await message.reply_text(admin_text)
-
 @app.on_message(filters.command("setthumbnail") & filters.user(OWNER_ID))
 async def set_thumbnail(client, message: Message):
     if not message.reply_to_message or not message.reply_to_message.photo:
@@ -536,4 +473,24 @@ async def compress_video_command(client, message: Message):
             thumb=thumbnail_path,
             caption=f"🎥 **Video compressed to 480p**\n\n{video_settings.get_settings_text().split('**Available Commands:**')[0]}",
             reply_to_message_id=message.reply_to_message.id
- 
+        )
+        
+        await upload_msg.delete()
+        
+        try:
+            os.remove(input_path)
+            os.remove(output_path)
+        except:
+            pass
+            
+    except Exception as e:
+        await message.reply_text(f"❌ **Error**: {str(e)}")
+        
+        try:
+            if 'input_path' in locals():
+                os.remove(input_path)
+            if 'output_path' in locals():
+                os.remove(output_path)
+        except:
+            pass
+            
