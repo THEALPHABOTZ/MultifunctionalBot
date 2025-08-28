@@ -1,116 +1,100 @@
-from pyrogram import filters
+import logging
+from pyrogram import Client, filters
 from pyrogram.types import Message
-from bot import app
 from config import OWNER_ID
 from database import Database
 
+db = Database()
+logger = logging.getLogger(__name__)
 
-async def is_admin_or_owner(user_id: int) -> bool:
-    if user_id == OWNER_ID:
+
+# ─────────────────────────────
+# Database utility functions
+# ─────────────────────────────
+
+async def add_admin_to_db(user_id: int) -> bool:
+    try:
+        existing = await db.admin_collection.find_one({"user_id": user_id})
+        if existing:
+            return False
+        await db.admin_collection.insert_one({"user_id": user_id})
         return True
-    return await Database.is_admin(user_id)
+    except Exception as e:
+        logger.error(f"Error adding admin: {e}")
+        return False
 
 
-@app.on_message(filters.command("addadmin") & filters.user(OWNER_ID))
-async def add_admin(client, message: Message):
-    user_id = None
-    if message.reply_to_message:
-        user_id = message.reply_to_message.from_user.id
-    elif len(message.command) > 1:
-        try:
-            user_id = int(message.command[1])
-        except ValueError:
-            await message.reply_text("❌ Invalid user ID")
-            return
-
-    if not user_id:
-        await message.reply_text("❌ Reply to a user or provide user ID")
-        return
-
-    if user_id == OWNER_ID:
-        await message.reply_text("❌ Owner cannot be added as admin")
-        return
-
-    if await Database.is_admin(user_id):
-        await message.reply_text("❌ User is already an admin")
-        return
-
-    success = await Database.add_admin(user_id)
-    if success:
-        try:
-            user = await app.get_users(user_id)
-            await message.reply_text(f"✅ {user.first_name} (`{user_id}`) added as admin")
-        except:
-            await message.reply_text(f"✅ User {user_id} added as admin")
-    else:
-        await message.reply_text("❌ Failed to add admin")
+async def remove_admin_from_db(user_id: int) -> bool:
+    try:
+        result = await db.admin_collection.delete_one({"user_id": user_id})
+        return result.deleted_count > 0
+    except Exception as e:
+        logger.error(f"Error removing admin: {e}")
+        return False
 
 
-@app.on_message(filters.command("rmadmin") & filters.user(OWNER_ID))
-async def remove_admin(client, message: Message):
-    user_id = None
-    if message.reply_to_message:
-        user_id = message.reply_to_message.from_user.id
-    elif len(message.command) > 1:
-        try:
-            user_id = int(message.command[1])
-        except ValueError:
-            await message.reply_text("❌ Invalid user ID")
-            return
-
-    if not user_id:
-        await message.reply_text("❌ Reply to a user or provide user ID")
-        return
-
-    success = await Database.remove_admin(user_id)
-    if success:
-        try:
-            user = await app.get_users(user_id)
-            await message.reply_text(f"✅ {user.first_name} (`{user_id}`) removed from admin")
-        except:
-            await message.reply_text(f"✅ User {user_id} removed from admin")
-    else:
-        await message.reply_text("❌ User not found in admin list")
+async def get_all_admin_ids() -> list:
+    try:
+        cursor = db.admin_collection.find({})
+        admins = await cursor.to_list(length=None)
+        admin_ids = [admin["user_id"] for admin in admins]
+        admin_ids.append(OWNER_ID)  # always include owner
+        return list(set(admin_ids))
+    except Exception as e:
+        logger.error(f"Error fetching admins: {e}")
+        return [OWNER_ID]
 
 
-@app.on_message(filters.command("adminlist") & filters.user(OWNER_ID))
-async def admin_list(client, message: Message):
-    admins = await Database.get_admins()
-    if not admins:
-        await message.reply_text("📝 No admins found")
-        return
+# ─────────────────────────────
+# Command handlers
+# ─────────────────────────────
 
-    text = "👥 **Admin List:**\n\n"
-    for admin_id in admins:
-        try:
-            user = await app.get_users(admin_id)
-            text += f"• {user.first_name} (`{admin_id}`)\n"
-        except:
-            text += f"• Unknown User (`{admin_id}`)\n"
+@Client.on_message(filters.command("addadmin") & filters.private)
+async def add_admin_cmd(client: Client, message: Message):
+    if message.from_user.id != OWNER_ID:
+        return await message.reply_text("🚫 Only the owner can add admins.")
 
-    await message.reply_text(text)
+    if len(message.command) != 2:
+        return await message.reply_text("Usage: `/addadmin user_id`")
+
+    try:
+        target_id = int(message.command[1])
+        success = await add_admin_to_db(target_id)
+        if success:
+            await message.reply_text(f"✅ User `{target_id}` added as admin.")
+        else:
+            await message.reply_text(f"⚠️ User `{target_id}` is already an admin.")
+    except Exception as e:
+        await message.reply_text(f"❌ Error: `{str(e)}`")
 
 
-@app.on_message(filters.command("admins"))
-async def show_admins(client, message: Message):
-    if not await is_admin_or_owner(message.from_user.id):
-        await message.reply_text("❌ Access denied")
-        return
+@Client.on_message(filters.command("rmadmin") & filters.private)
+async def remove_admin_cmd(client: Client, message: Message):
+    if message.from_user.id != OWNER_ID:
+        return await message.reply_text("🚫 Only the owner can remove admins.")
 
-    admins = await Database.get_admins()
-    if not admins:
-        await message.reply_text("👥 No admins found")
-        return
+    if len(message.command) != 2:
+        return await message.reply_text("Usage: `/rmadmin user_id`")
 
-    text = f"👥 Total Admins: {len(admins)}\n\n"
-    for admin_id in admins[:10]:
-        try:
-            user = await app.get_users(admin_id)
-            text += f"• {user.first_name} (`{admin_id}`)\n"
-        except:
-            text += f"• Unknown User (`{admin_id}`)\n"
+    try:
+        target_id = int(message.command[1])
+        removed = await remove_admin_from_db(target_id)
+        if removed:
+            await message.reply_text(f"✅ User `{target_id}` removed from admin list.")
+        else:
+            await message.reply_text(f"⚠️ User `{target_id}` was not in admin list.")
+    except Exception as e:
+        await message.reply_text(f"❌ Error: `{str(e)}`")
 
-    if len(admins) > 10:
-        text += f"\n...and {len(admins) - 10} more"
 
-    await message.reply_text(text)
+@Client.on_message(filters.command("adminlist") & filters.private)
+async def list_admins_cmd(client: Client, message: Message):
+    if message.from_user.id != OWNER_ID:
+        return await message.reply_text("🚫 Only the owner can view admins.")
+
+    try:
+        admin_ids = await get_all_admin_ids()
+        text = "**🔐 Admins:**\n" + "\n".join([f"- `{uid}`" for uid in admin_ids])
+        await message.reply_text(text)
+    except Exception as e:
+        await message.reply_text(f"❌ Error: `{str(e)}`")
