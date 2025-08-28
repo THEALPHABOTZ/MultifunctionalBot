@@ -1,21 +1,14 @@
-# ---------------------------------------------------------
-# Copyright (c) 2021-2025
-# Developers: TheAlphaBotz
-# Telegram: @TheAlphaBotz
-# License: All Rights Reserved
-# ---------------------------------------------------------
-
 import os
 import re
 import time
-import json
-import subprocess
 import math
 import asyncio
+import subprocess
 from pyrogram import filters
-from pyrogram.types import Message
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from bot import app
 from config import OWNER_ID, DOWNLOAD_DIR
+from database import Database
 
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
@@ -29,26 +22,22 @@ class VideoSettings:
             "audio_bitrate": "48k",
             "audio_codec": "libopus"
         }
-        self.settings_file = os.path.join(DOWNLOAD_DIR, "video_settings.json")
-        self.load_settings()
     
-    def load_settings(self):
+    async def load_settings(self):
         try:
-            if os.path.exists(self.settings_file):
-                with open(self.settings_file, 'r') as f:
-                    saved_settings = json.load(f)
-                    self.settings.update(saved_settings)
+            saved_settings = await Database.load_video_settings()
+            if saved_settings:
+                self.settings.update(saved_settings)
         except Exception:
             pass
     
-    def save_settings(self):
+    async def save_settings(self):
         try:
-            with open(self.settings_file, 'w') as f:
-                json.dump(self.settings, f, indent=2)
+            await Database.save_video_settings(self.settings)
         except Exception:
             pass
     
-    def update_setting(self, key: str, value: str) -> bool:
+    async def update_setting(self, key: str, value: str) -> bool:
         setting_map = {
             "codec": "codec",
             "crf": "crf", 
@@ -59,7 +48,7 @@ class VideoSettings:
         
         if key in setting_map:
             self.settings[setting_map[key]] = value
-            self.save_settings()
+            await self.save_settings()
             return True
         return False
     
@@ -74,11 +63,11 @@ class VideoSettings:
 🎵 **Audio Bitrate**: `{self.settings['audio_bitrate']}`
 
 **Available Commands:**
-• `/codec <value>` - Set video codec (e.g., libx264, libx265, libvpx-vp9)
-• `/crf <value>` - Set CRF value (0-51, lower = better quality)
-• `/preset <value>` - Set encoding preset (ultrafast, veryfast, fast, medium, slow)
-• `/audio <value>` - Set audio codec (aac, libopus, mp3)
-• `/audiobit <value>` - Set audio bitrate (32k, 48k, 64k, 128k, etc.)"""
+• `/codec <value>` - Set video codec
+• `/crf <value>` - Set CRF value (0-51)
+• `/preset <value>` - Set encoding preset
+• `/audio <value>` - Set audio codec
+• `/audiobit <value>` - Set audio bitrate"""
 
 video_settings = VideoSettings()
 
@@ -103,6 +92,11 @@ def time_formatter(milliseconds: int) -> str:
         ((str(minutes) + "m, ") if minutes else "") + \
         ((str(seconds) + "s, ") if seconds else "")
     return tmp[:-2] if tmp else "0s"
+
+async def is_admin_or_owner(user_id: int) -> bool:
+    if user_id == OWNER_ID:
+        return True
+    return await Database.is_admin(user_id)
 
 async def get_video_duration(video_path: str) -> int:
     process = subprocess.Popen(
@@ -153,7 +147,8 @@ def sanitize_filename(name: str) -> str:
     return name
 
 async def download_video(message: Message) -> str:
-    file_name = sanitize_filename(getattr(message.video, 'file_name', f"video_{int(time.time())}.mp4"))
+    media = message.video or message.document
+    file_name = sanitize_filename(getattr(media, 'file_name', f"video_{int(time.time())}.mp4"))
     file_path = os.path.join(DOWNLOAD_DIR, file_name)
     
     progress_msg = await message.reply_text("📥 **Starting download...**")
@@ -174,6 +169,7 @@ async def download_video(message: Message) -> str:
         raise
 
 async def compress_video(input_path: str, message: Message) -> str:
+    await video_settings.load_settings()
     settings = video_settings.settings
     base_name = os.path.splitext(os.path.basename(input_path))[0]
     output_path = os.path.join(DOWNLOAD_DIR, f"{base_name}_480p.mp4")
@@ -300,20 +296,113 @@ async def compress_video(input_path: str, message: Message) -> str:
         await progress_msg.edit_text(f"❌ **Compression failed**: {str(e)}")
         raise
 
-@app.on_message(filters.command("codec") & filters.user(OWNER_ID))
+@app.on_message(filters.command("addadmin") & filters.user(OWNER_ID))
+async def add_admin(client, message: Message):
+    user_id = None
+    
+    if message.reply_to_message:
+        user_id = message.reply_to_message.from_user.id
+    elif len(message.command) > 1:
+        try:
+            user_id = int(message.command[1])
+        except ValueError:
+            await message.reply_text("❌ **Invalid user ID**")
+            return
+    
+    if not user_id:
+        await message.reply_text("❌ **Reply to a user or provide user ID**")
+        return
+    
+    if user_id == OWNER_ID:
+        await message.reply_text("❌ **Owner cannot be added as admin**")
+        return
+    
+    success = await Database.add_admin(user_id)
+    if success:
+        await message.reply_text(f"✅ **User {user_id} added as admin**")
+    else:
+        await message.reply_text("❌ **Failed to add admin**")
+
+@app.on_message(filters.command("rmadmin") & filters.user(OWNER_ID))
+async def remove_admin(client, message: Message):
+    user_id = None
+    
+    if message.reply_to_message:
+        user_id = message.reply_to_message.from_user.id
+    elif len(message.command) > 1:
+        try:
+            user_id = int(message.command[1])
+        except ValueError:
+            await message.reply_text("❌ **Invalid user ID**")
+            return
+    
+    if not user_id:
+        await message.reply_text("❌ **Reply to a user or provide user ID**")
+        return
+    
+    success = await Database.remove_admin(user_id)
+    if success:
+        await message.reply_text(f"✅ **User {user_id} removed from admin**")
+    else:
+        await message.reply_text("❌ **User not found in admin list**")
+
+@app.on_message(filters.command("adminlist") & filters.user(OWNER_ID))
+async def admin_list(client, message: Message):
+    admins = await Database.get_admins()
+    if not admins:
+        await message.reply_text("📝 **No admins found**")
+        return
+    
+    admin_text = "👥 **Admin List:**\n\n"
+    for admin_id in admins:
+        admin_text += f"• `{admin_id}`\n"
+    
+    await message.reply_text(admin_text)
+
+@app.on_message(filters.command("setthumbnail") & filters.user(OWNER_ID))
+async def set_thumbnail(client, message: Message):
+    if not message.reply_to_message or not message.reply_to_message.photo:
+        await message.reply_text("❌ **Reply to a photo to set as thumbnail**")
+        return
+    
+    photo = message.reply_to_message.photo
+    success = await Database.set_thumbnail(photo.file_id)
+    
+    if success:
+        await message.reply_text("✅ **Thumbnail set successfully**")
+    else:
+        await message.reply_text("❌ **Failed to set thumbnail**")
+
+@app.on_message(filters.command("getthumbnail") & filters.user(OWNER_ID))
+async def get_thumbnail(client, message: Message):
+    thumbnail_id = await Database.get_thumbnail()
+    if thumbnail_id:
+        await message.reply_photo(thumbnail_id, caption="📷 **Current Thumbnail**")
+    else:
+        await message.reply_text("❌ **No thumbnail set**")
+
+@app.on_message(filters.command("codec"))
 async def set_codec(client, message: Message):
+    if not await is_admin_or_owner(message.from_user.id):
+        await message.reply_text("❌ **Access denied**")
+        return
+        
     if len(message.command) < 2:
         await message.reply_text("❌ **Usage**: `/codec <codec_name>`\n**Examples**: `libx264`, `libx265`, `libvpx-vp9`")
         return
     
     codec = message.command[1]
-    if video_settings.update_setting("codec", codec):
+    if await video_settings.update_setting("codec", codec):
         await message.reply_text(f"✅ **Video codec set to**: `{codec}`")
     else:
         await message.reply_text("❌ **Failed to update codec**")
 
-@app.on_message(filters.command("crf") & filters.user(OWNER_ID))
+@app.on_message(filters.command("crf"))
 async def set_crf(client, message: Message):
+    if not await is_admin_or_owner(message.from_user.id):
+        await message.reply_text("❌ **Access denied**")
+        return
+        
     if len(message.command) < 2:
         await message.reply_text("❌ **Usage**: `/crf <value>`\n**Range**: 0-51 (lower = better quality)")
         return
@@ -321,15 +410,19 @@ async def set_crf(client, message: Message):
     try:
         crf = int(message.command[1])
         if 0 <= crf <= 51:
-            video_settings.update_setting("crf", str(crf))
+            await video_settings.update_setting("crf", str(crf))
             await message.reply_text(f"✅ **CRF set to**: `{crf}`")
         else:
             await message.reply_text("❌ **CRF must be between 0-51**")
     except ValueError:
         await message.reply_text("❌ **CRF must be a number**")
 
-@app.on_message(filters.command("preset") & filters.user(OWNER_ID))
+@app.on_message(filters.command("preset"))
 async def set_preset(client, message: Message):
+    if not await is_admin_or_owner(message.from_user.id):
+        await message.reply_text("❌ **Access denied**")
+        return
+        
     if len(message.command) < 2:
         await message.reply_text("❌ **Usage**: `/preset <preset>`\n**Options**: ultrafast, veryfast, fast, medium, slow, slower, veryslow")
         return
@@ -338,33 +431,46 @@ async def set_preset(client, message: Message):
     valid_presets = ["ultrafast", "veryfast", "fast", "medium", "slow", "slower", "veryslow"]
     
     if preset in valid_presets:
-        video_settings.update_setting("preset", preset)
+        await video_settings.update_setting("preset", preset)
         await message.reply_text(f"✅ **Preset set to**: `{preset}`")
     else:
         await message.reply_text(f"❌ **Invalid preset**. Choose from: {', '.join(valid_presets)}")
 
-@app.on_message(filters.command("audio") & filters.user(OWNER_ID))
+@app.on_message(filters.command("audio"))
 async def set_audio_codec(client, message: Message):
+    if not await is_admin_or_owner(message.from_user.id):
+        await message.reply_text("❌ **Access denied**")
+        return
+        
     if len(message.command) < 2:
         await message.reply_text("❌ **Usage**: `/audio <codec>`\n**Examples**: `aac`, `libopus`, `mp3`")
         return
     
     codec = message.command[1]
-    video_settings.update_setting("audio", codec)
+    await video_settings.update_setting("audio", codec)
     await message.reply_text(f"✅ **Audio codec set to**: `{codec}`")
 
-@app.on_message(filters.command("audiobit") & filters.user(OWNER_ID))
+@app.on_message(filters.command("audiobit"))
 async def set_audio_bitrate(client, message: Message):
+    if not await is_admin_or_owner(message.from_user.id):
+        await message.reply_text("❌ **Access denied**")
+        return
+        
     if len(message.command) < 2:
         await message.reply_text("❌ **Usage**: `/audiobit <bitrate>`\n**Examples**: `32k`, `48k`, `64k`, `128k`")
         return
     
     bitrate = message.command[1]
-    video_settings.update_setting("audiobit", bitrate)
+    await video_settings.update_setting("audiobit", bitrate)
     await message.reply_text(f"✅ **Audio bitrate set to**: `{bitrate}`")
 
-@app.on_message(filters.command("settings") & filters.user(OWNER_ID))
+@app.on_message(filters.command("settings"))
 async def show_settings(client, message: Message):
+    if not await is_admin_or_owner(message.from_user.id):
+        await message.reply_text("❌ **Access denied**")
+        return
+        
+    await video_settings.load_settings()
     await message.reply_text(video_settings.get_settings_text())
 
 @app.on_message(filters.command("test480") & filters.user(OWNER_ID))
@@ -379,20 +485,24 @@ async def compress_video_command(client, message: Message):
     
     replied_message = message.reply_to_message
     
-    if not replied_message.video:
+    if not (replied_message.video or (replied_message.document and replied_message.document.mime_type and replied_message.document.mime_type.startswith("video"))):
         await message.reply_text("❌ **The replied message must contain a video file**")
         return
     
     try:
-        file_size = replied_message.video.file_size
+        media = replied_message.video or replied_message.document
+        file_size = media.file_size
+        
         if file_size > 2 * 1024 * 1024 * 1024:
             await message.reply_text("❌ **File too large! Maximum size: 2GB**")
             return
         
+        duration = getattr(media, 'duration', 0) or 0
+        
         await message.reply_text(
             f"📺 **Video received!**\n\n"
             f"📁 **Size**: {humanbytes(file_size)}\n"
-            f"⏱️ **Duration**: {replied_message.video.duration}s\n\n"
+            f"⏱️ **Duration**: {duration}s\n\n"
             f"🔄 **Starting compression with current settings...**"
         )
         
@@ -401,9 +511,12 @@ async def compress_video_command(client, message: Message):
         
         upload_msg = await message.reply_text("📤 **Uploading compressed video...**")
         
-        await app.send_video(
+        thumbnail = await Database.get_thumbnail()
+        
+        await app.send_document(
             chat_id=message.chat.id,
-            video=output_path,
+            document=output_path,
+            thumb=thumbnail,
             caption=f"🎥 **Video compressed to 480p**\n\n{video_settings.get_settings_text().split('**Available Commands:**')[0]}",
             reply_to_message_id=message.reply_to_message.id
         )
@@ -426,4 +539,3 @@ async def compress_video_command(client, message: Message):
                 os.remove(output_path)
         except:
             pass
-        
