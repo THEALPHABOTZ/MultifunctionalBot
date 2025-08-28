@@ -5,10 +5,10 @@ import math
 import asyncio
 import subprocess
 from pyrogram import filters
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+from pyrogram.types import Message
 from bot import app
 from config import OWNER_ID, DOWNLOAD_DIR
-from database import Database
+from database import Database, thumbnail_manager
 
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
@@ -365,21 +365,38 @@ async def set_thumbnail(client, message: Message):
         await message.reply_text("❌ **Reply to a photo to set as thumbnail**")
         return
     
-    photo = message.reply_to_message.photo
-    success = await Database.set_thumbnail(photo.file_id)
-    
-    if success:
-        await message.reply_text("✅ **Thumbnail set successfully**")
-    else:
-        await message.reply_text("❌ **Failed to set thumbnail**")
+    try:
+        temp_path = await app.download_media(message.reply_to_message.photo)
+        success = await thumbnail_manager.set_thumbnail(temp_path)
+        
+        if success:
+            await message.reply_text("✅ **Thumbnail set successfully**")
+        else:
+            await message.reply_text("❌ **Failed to set thumbnail**")
+        
+        try:
+            os.remove(temp_path)
+        except:
+            pass
+            
+    except Exception as e:
+        await message.reply_text(f"❌ **Error setting thumbnail**: {str(e)}")
 
 @app.on_message(filters.command("getthumbnail") & filters.user(OWNER_ID))
 async def get_thumbnail(client, message: Message):
-    thumbnail_id = await Database.get_thumbnail()
-    if thumbnail_id:
-        await message.reply_photo(thumbnail_id, caption="📷 **Current Thumbnail**")
+    thumbnail_path = await thumbnail_manager.get_thumbnail()
+    if thumbnail_path:
+        await message.reply_photo(thumbnail_path, caption="📷 **Current Thumbnail**")
     else:
         await message.reply_text("❌ **No thumbnail set**")
+
+@app.on_message(filters.command("delthumbnail") & filters.user(OWNER_ID))
+async def delete_thumbnail(client, message: Message):
+    success = await thumbnail_manager.delete_thumbnail()
+    if success:
+        await message.reply_text("✅ **Thumbnail deleted successfully**")
+    else:
+        await message.reply_text("❌ **No thumbnail found to delete**")
 
 @app.on_message(filters.command("codec"))
 async def set_codec(client, message: Message):
@@ -511,31 +528,12 @@ async def compress_video_command(client, message: Message):
         
         upload_msg = await message.reply_text("📤 **Uploading compressed video...**")
         
-        thumbnail = await Database.get_thumbnail()
+        thumbnail_path = await thumbnail_manager.get_thumbnail()
         
         await app.send_document(
             chat_id=message.chat.id,
             document=output_path,
-            thumb=thumbnail,
+            thumb=thumbnail_path,
             caption=f"🎥 **Video compressed to 480p**\n\n{video_settings.get_settings_text().split('**Available Commands:**')[0]}",
             reply_to_message_id=message.reply_to_message.id
-        )
-        
-        await upload_msg.delete()
-        
-        try:
-            os.remove(input_path)
-            os.remove(output_path)
-        except:
-            pass
-            
-    except Exception as e:
-        await message.reply_text(f"❌ **Error**: {str(e)}")
-        
-        try:
-            if 'input_path' in locals():
-                os.remove(input_path)
-            if 'output_path' in locals():
-                os.remove(output_path)
-        except:
-            pass
+ 
