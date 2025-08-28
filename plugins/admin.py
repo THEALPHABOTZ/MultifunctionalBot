@@ -3,6 +3,7 @@ from pyrogram import Client, filters
 from pyrogram.types import Message
 from config import OWNER_ID
 from database import Database
+from bot import app
 
 db = Database()
 logger = logging.getLogger(__name__)
